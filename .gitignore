@@ -1,0 +1,5 @@
+__pycache__/
+data/
+videogen/externals/superglue/weights/*.pth
+videogen/checkpoints/
+RaDe-GS
