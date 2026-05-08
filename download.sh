@@ -5,20 +5,23 @@ set -e
 
 # Define the target directory based on the README format
 TARGET_DIR="./data/GSCollision"
+TARGET_FOLDER="mpm/*"
+export HF_HUB_ENABLE_HF_TRANSFER=1
 
 echo "Creating target directory at ${TARGET_DIR}..."
 mkdir -p "${TARGET_DIR}"
 
-echo "Downloading GSCollision dataset from Hugging Face..."
+echo "Downloading GSCollision dataset folder ${TARGET_FOLDER} from Hugging Face..."
 # Download the dataset directly into the target directory, avoiding symlinks
 # so the files are placed physically just as the README describes.
 hf download lishiqianhugh/GSCollision \
   --repo-type dataset \
   --local-dir "${TARGET_DIR}" \
-  --max-workers 4
+  --max-workers 6 \
+  --include "${TARGET_FOLDER}"
 
 echo "=========================================================="
 echo "Download complete!"
 echo "The dataset has been successfully saved to ${TARGET_DIR}."
-echo "It should now contain the expected folders like 'objects', 'backgrounds', and 'scene_configs'."
+echo "It should now contain the expected folder ${TARGET_FOLDER}"
 echo "=========================================================="
