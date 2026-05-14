@@ -78,9 +78,11 @@ def parse_args():
     parser.add_argument('--mixed_precision', type=str, default='no', choices=['no', 'bf16', 'fp16'], help='Mixed precision training')
 
     # Optional logger
-    parser.add_argument("--training_tracker", type=str, default=None, choices=["swanlab"], help="Logger to use (swanlab or None)")
-    parser.add_argument("--project_name", type=str, default="NGFF-Dynamics", help="SwanLab project name")
-    parser.add_argument("--experiment_name", type=str, default=None, help="SwanLab experiment name")
+    parser.add_argument("--training_tracker", type=str, default=None, choices=["swanlab", "wandb"], help="Logger to use (swanlab, wandb, or None)")
+    parser.add_argument("--project_name", type=str, default="NGFF-Dynamics", help="Project name")
+    parser.add_argument("--experiment_name", type=str, default=None, help="Experiment name")
+    parser.add_argument("--resume_from", type=str, default=None, help="Path to a checkpoint (.pth) to resume model weights from")
+
 
     return parser.parse_args()
 
@@ -88,9 +90,10 @@ def prepare_dataset(args, dtype):
     #################################
     #   Loading initial GS data     #
     #################################
-    data_path = './data/GSCollision/GSCollision/mpm/'
+    data_path = './data/GSCollision/mpm/'
     # scenes = [os.path.join(data_path, group, scene) for group in os.listdir(data_path) if not group.startswith('.') for scene in os.listdir(os.path.join(data_path, group)) if not scene.startswith('.')]
-    scenes = [os.path.join(data_path, group, scene) for group in ['3_0', '3_1', '3_2', '3_3', '3_4', '3_5', '3_6', '3_7', '3_8'] if not group.startswith('.') for scene in os.listdir(os.path.join(data_path, group)) if not scene.startswith('.')]
+    # scenes = [os.path.join(data_path, group, scene) for group in ['3_0', '3_1', '3_2', '3_3', '3_4', '3_5', '3_6', '3_7', '3_8'] if not group.startswith('.') for scene in os.listdir(os.path.join(data_path, group)) if not scene.startswith('.')]
+    scenes = [os.path.join(data_path, group, scene) for group in ['3_0', '3_3', '3_4', '3_5', '3_6', '3_7'] if not group.startswith('.') for scene in os.listdir(os.path.join(data_path, group)) if not scene.startswith('.')]
     scenes = scenes[:args.sample_num]
 
     t1 = time.time()
@@ -145,10 +148,16 @@ def configure_training_tracker(args, accelerator, time_str):
     if experiment_name is None:
         experiment_name = f"{args.dynamic_model}_out_{time_str}"
     
+    init_kwargs = {}
+    if args.training_tracker == "swanlab":
+        init_kwargs["swanlab"] = {"experiment_name": experiment_name}
+    elif args.training_tracker == "wandb":
+        init_kwargs["wandb"] = {"name": experiment_name}
+
     accelerator.init_trackers(
         project_name=args.project_name,
         config=config,
-        init_kwargs={"swanlab": {"experiment_name": experiment_name}}
+        init_kwargs=init_kwargs
     )
 
 def main():
@@ -166,8 +175,8 @@ def main():
         "kwargs_handlers": [ddp_kwargs],
     }
 
-    if args.training_tracker == "swanlab":
-        accelerator_kwargs["log_with"] = ["swanlab"]
+    if args.training_tracker is not None:
+        accelerator_kwargs["log_with"] = [args.training_tracker]
 
     accelerator = Accelerator(**accelerator_kwargs)
 
@@ -194,6 +203,9 @@ def main():
     )
 
     model = prepare_model(args)
+    if args.resume_from is not None:
+        logger.info(f"Resuming model weights from checkpoint: {args.resume_from}")
+        model.load_state_dict(torch.load(args.resume_from, map_location='cpu'))
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
     num_training_steps = args.epochs * len(dataloader)
     scheduler = get_cosine_with_min_lr_schedule_with_warmup(
@@ -258,7 +270,7 @@ def main():
                 scheduler.step()
 
                 # log scalars every 10 steps to avoid frequent GPU->CPU sync
-                if args.training_tracker == "swanlab" and (global_step % 2 == 0):
+                if args.training_tracker is not None and (global_step % 2 == 0):
                     accelerator.log({
                         "train/loss": loss.item(),
                         "train/lr": scheduler.get_last_lr()[0],

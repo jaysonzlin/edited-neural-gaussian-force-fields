@@ -9,6 +9,8 @@ import json
 import re
 from tqdm import tqdm
 
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+
 # Gaussian splatting dependencies
 from utils.gs_utils import GaussianModel,load_params_from_gs
 from utils.general_utils import searchForMaxIteration
@@ -18,8 +20,8 @@ from utils.decode_param import *
 from utils.transformation_utils import dof6_to_matrix3x3,euler_xyz_to_matrix,se3_inverse,get_center_view_worldspace_and_observant_coordinate,apply_cov_rotations
 from utils.camera_utils import extract_camera_matrices,get_camera_view
 
-from .constants import OBJPART,SCENES,generate_ground_plane
-from .generate_prompts import generate_point_prompt, generate_bbox_prompt, generate_text_prompt
+from dataset.constants import OBJPART,SCENES,generate_ground_plane
+from dataset.generate_prompts import generate_point_prompt, generate_bbox_prompt, generate_text_prompt
 
 
 from gsplat import rasterization

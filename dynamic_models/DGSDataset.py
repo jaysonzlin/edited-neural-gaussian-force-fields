@@ -60,7 +60,7 @@ class DGSDataset(Dataset):
 
         self.data_cache = []
 
-        max_workers = 1
+        max_workers = 96
         print(f"Using {max_workers} / {multiprocessing.cpu_count()} workers for loading sequences.")
 
         if ply_dirs and preprocessing_params: 

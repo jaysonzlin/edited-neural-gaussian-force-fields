@@ -3,3 +3,6 @@ data/
 videogen/externals/superglue/weights/*.pth
 videogen/checkpoints/
 RaDe-GS
+exps/
+output/
+wandb/
