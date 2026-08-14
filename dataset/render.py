@@ -22,6 +22,7 @@ from utils.camera_utils import extract_camera_matrices,get_camera_view
 
 from dataset.constants import OBJPART,SCENES,generate_ground_plane
 from dataset.generate_prompts import generate_point_prompt, generate_bbox_prompt, generate_text_prompt
+from dataset.depth_export import rasterize_rgb_expected_depth, write_depth_h5
 
 
 from gsplat import rasterization
@@ -329,32 +330,32 @@ if __name__ == "__main__":
             scales = torch.zeros((pos.shape[0], 3), dtype=torch.float32, device=device)  # ignored by rasterizer
             all_rendering_img = []
             all_rendering_depth = []
+            all_rendering_alpha = []
             V = current_extrinsic.shape[0]
             mini_batch_size = 5
 
             for view_iter in range(0, V, mini_batch_size):
                 end_view_iter = min(view_iter + mini_batch_size, V)
-                rendering, alpha, _ = rasterization(means=pos, quats=quats, scales=scales, opacities=opacity.squeeze(-1), colors=shs,
-                                                    viewmats=current_extrinsic[view_iter:end_view_iter], Ks=current_intrinsic[view_iter:end_view_iter],
-                                                    width=args.resolution, height=args.resolution, sh_degree=args.shs_degree, render_mode="RGB+D", packed=False,
-                                                    near_plane=1e-10, backgrounds=background.unsqueeze(0).repeat(end_view_iter - view_iter, 1),
-                                                    radius_clip=0.1, covars=cov3D, rasterize_mode='classic')
-                rendering_img, rendering_depth = torch.split(rendering, [3, 1], dim=-1)  # [1,H,W,3], [1,H,W,1]
+                rendering_img, rendering_depth, rendering_alpha = rasterize_rgb_expected_depth(
+                    rasterization,
+                    means=pos, quats=quats, scales=scales, opacities=opacity.squeeze(-1), colors=shs,
+                    viewmats=current_extrinsic[view_iter:end_view_iter], Ks=current_intrinsic[view_iter:end_view_iter],
+                    width=args.resolution, height=args.resolution, sh_degree=args.shs_degree, packed=False,
+                    near_plane=1e-10, backgrounds=background.unsqueeze(0).repeat(end_view_iter - view_iter, 1),
+                    radius_clip=0.1, covars=cov3D, rasterize_mode='classic'
+                )
                 rendering_img = rendering_img.clamp(0.0, 1.0)
                 all_rendering_img.append(rendering_img)
                 all_rendering_depth.append(rendering_depth)
+                all_rendering_alpha.append(rendering_alpha)
 
             all_rendering_img = torch.cat(all_rendering_img, dim=0)
             all_rendering_depth = torch.cat(all_rendering_depth, dim=0)
+            all_rendering_alpha = torch.cat(all_rendering_alpha, dim=0)
             all_rendering_img = all_rendering_img.clamp(0.0, 1.0)
 
         # Quantize on GPU to uint8 then move to CPU
         rendering_cpu = (all_rendering_img.mul(255.0).add_(0.5)).clamp_(0, 255).to(torch.uint8).detach().cpu()  # (V, H, W, 3)
-        depth = all_rendering_depth.squeeze(-1).detach()  # (V, H, W)
-        depth_max = depth.max()
-        depth_norm = depth / depth_max
-        depth_norm = depth_norm.clamp(0, 1)
-        depth_norm = depth_norm.cpu()
         
         # Post-process initial frames: write images and/or compile video
         fps_init = int(1.0 / time_params["frame_dt"])
@@ -376,20 +377,12 @@ if __name__ == "__main__":
                 )
 
         if args.render_depth:
-            # depth_cpu: (V, H, W) -> save as 16-bit grayscale PNG (normalized per-frame)
             assert args.initial_path is not None
-            depth_map = depth_norm.numpy()
-            depth_16 = (depth_map * 65535.0).round().astype(np.uint16)
-            with h5py.File(os.path.join(args.initial_path, "depth.h5"), 'w') as f:
-                f.create_dataset("depth", data=depth_16, compression="gzip")
-                f.create_dataset("depth_max", data=depth_max.detach().cpu().numpy())
-            # for view_iter in range(depth_cpu.shape[0]):
-            #     depth_img = depth_cpu[view_iter].clone()
-            #     depth_map = depth_img.numpy()
-                # normalize to 0..1 then scale to 16-bit
-                # depth_norm = (depth_map - depth_map.min()) / (depth_map.max() - depth_map.min() + 1e-8)
-                # depth16 = (depth_norm * 65535.0).round().astype(np.uint16)
-                # cv2.imwrite(os.path.join(args.initial_path, f"{view_iter:04d}_depth.png"), depth16)
+            write_depth_h5(
+                os.path.join(args.initial_path, "depth.h5"),
+                all_rendering_depth.unsqueeze(0),
+                all_rendering_alpha.unsqueeze(0),
+            )
 
         if args.compile_video:
             # Write initial render video using OpenCV VideoWriter
@@ -420,6 +413,7 @@ if __name__ == "__main__":
         all_frames_u8 = None
         # Store depths as float32 on CPU with shape (T, V, H, W)
         all_frames_depth = None
+        all_frames_alpha = None
 
         for frame in tqdm(range(frame_num)):
 
@@ -470,26 +464,30 @@ if __name__ == "__main__":
                 scales = torch.zeros((pos.shape[0], 3), dtype=torch.float32, device=device) # will be ignored, so just set to 0
                 all_rendering_img = []
                 all_rendering_depth = []
+                all_rendering_alpha = []
                 V = current_extrinsic.shape[0]
                 mini_batch_size = 5
 
                 for view_iter in range(0, V, mini_batch_size):
                     end_view_iter = min(view_iter + mini_batch_size, V)
-                    rendering, alpha, _ = rasterization(means=pos, quats=quats, scales=scales, opacities=opacity.squeeze(-1), colors=shs,
-                                                    viewmats =current_extrinsic[view_iter:end_view_iter], Ks =current_intrinsic[view_iter:end_view_iter], width=args.resolution, height=args.resolution, sh_degree=2, 
-                                                    render_mode="RGB", packed=False, # "RGB+D"
-                                                    near_plane=1e-10,
-                                                    backgrounds=background.unsqueeze(0).repeat(end_view_iter - view_iter, 1),
-                                                    radius_clip=0.1,
-                                                    covars=cov3D,
-                                                    rasterize_mode='classic') # (1, H, W, 3) 
-                    # rendering_img, rendering_depth = torch.split(rendering, [3, 1], dim=-1) # [1,H,W,3] [1,H,W,1]
-                    rendering_img = rendering
+                    rendering_img, rendering_depth, rendering_alpha = rasterize_rgb_expected_depth(
+                        rasterization,
+                        means=pos, quats=quats, scales=scales, opacities=opacity.squeeze(-1), colors=shs,
+                        viewmats=current_extrinsic[view_iter:end_view_iter], Ks=current_intrinsic[view_iter:end_view_iter],
+                        width=args.resolution, height=args.resolution, sh_degree=2, packed=False,
+                        near_plane=1e-10,
+                        backgrounds=background.unsqueeze(0).repeat(end_view_iter - view_iter, 1),
+                        radius_clip=0.1,
+                        covars=cov3D,
+                        rasterize_mode='classic'
+                    )
                     all_rendering_img.append(rendering_img)
-                    # all_rendering_depth.append(rendering_depth)
+                    all_rendering_depth.append(rendering_depth)
+                    all_rendering_alpha.append(rendering_alpha)
                 
                 all_rendering_img = torch.cat(all_rendering_img, dim=0)
-                # all_rendering_depth = torch.cat(all_rendering_depth, dim=0)
+                all_rendering_depth = torch.cat(all_rendering_depth, dim=0)
+                all_rendering_alpha = torch.cat(all_rendering_alpha, dim=0)
                 all_rendering_img = all_rendering_img.clamp(0.0, 1.0)   
 
             # Quantize on GPU to uint8 then move to CPU and store
@@ -499,10 +497,30 @@ if __name__ == "__main__":
                 all_frames_u8 = torch.empty((frame_num, Vtmp, Htmp, Wtmp, 3), dtype=torch.uint8)
             frames_u8_cpu = frames_u8_gpu.detach().cpu()
             all_frames_u8[frame].copy_(frames_u8_cpu)
+
+            if args.render_depth:
+                frames_depth_cpu = all_rendering_depth.detach().cpu().float()
+                frames_alpha_cpu = all_rendering_alpha.detach().cpu().float()
+                if all_frames_depth is None:
+                    all_frames_depth = torch.empty(
+                        (frame_num, *frames_depth_cpu.shape), dtype=torch.float32
+                    )
+                    all_frames_alpha = torch.empty(
+                        (frame_num, *frames_alpha_cpu.shape), dtype=torch.float32
+                    )
+                all_frames_depth[frame].copy_(frames_depth_cpu)
+                all_frames_alpha[frame].copy_(frames_alpha_cpu)
         
         # Post-process: write images and/or compile video from rasterized frames
         fps = int(1.0 / time_params["frame_dt"])
         object_name = args.model_path.split('/')[-1].split('table_')[-1]
+
+        if args.render_depth:
+            write_depth_h5(
+                os.path.join(args.output_path, "depth.h5"),
+                all_frames_depth,
+                all_frames_alpha,
+            )
 
         # write individual images if requested
         if args.render_img:
