@@ -329,8 +329,8 @@ if __name__ == "__main__":
             quats = torch.zeros((pos.shape[0], 4), dtype=torch.float32, device=device)
             scales = torch.zeros((pos.shape[0], 3), dtype=torch.float32, device=device)  # ignored by rasterizer
             all_rendering_img = []
-            all_rendering_depth = []
-            all_rendering_alpha = []
+            all_rendering_depth = [] if args.render_depth else None
+            all_rendering_alpha = [] if args.render_depth else None
             V = current_extrinsic.shape[0]
             mini_batch_size = 5
 
@@ -338,6 +338,7 @@ if __name__ == "__main__":
                 end_view_iter = min(view_iter + mini_batch_size, V)
                 rendering_img, rendering_depth, rendering_alpha = rasterize_rgb_expected_depth(
                     rasterization,
+                    include_depth=args.render_depth,
                     means=pos, quats=quats, scales=scales, opacities=opacity.squeeze(-1), colors=shs,
                     viewmats=current_extrinsic[view_iter:end_view_iter], Ks=current_intrinsic[view_iter:end_view_iter],
                     width=args.resolution, height=args.resolution, sh_degree=args.shs_degree, packed=False,
@@ -346,12 +347,14 @@ if __name__ == "__main__":
                 )
                 rendering_img = rendering_img.clamp(0.0, 1.0)
                 all_rendering_img.append(rendering_img)
-                all_rendering_depth.append(rendering_depth)
-                all_rendering_alpha.append(rendering_alpha)
+                if args.render_depth:
+                    all_rendering_depth.append(rendering_depth)
+                    all_rendering_alpha.append(rendering_alpha)
 
             all_rendering_img = torch.cat(all_rendering_img, dim=0)
-            all_rendering_depth = torch.cat(all_rendering_depth, dim=0)
-            all_rendering_alpha = torch.cat(all_rendering_alpha, dim=0)
+            if args.render_depth:
+                all_rendering_depth = torch.cat(all_rendering_depth, dim=0)
+                all_rendering_alpha = torch.cat(all_rendering_alpha, dim=0)
             all_rendering_img = all_rendering_img.clamp(0.0, 1.0)
 
         # Quantize on GPU to uint8 then move to CPU
@@ -463,8 +466,8 @@ if __name__ == "__main__":
                 quats = torch.zeros((pos.shape[0], 4), dtype=torch.float32, device=device)
                 scales = torch.zeros((pos.shape[0], 3), dtype=torch.float32, device=device) # will be ignored, so just set to 0
                 all_rendering_img = []
-                all_rendering_depth = []
-                all_rendering_alpha = []
+                all_rendering_depth = [] if args.render_depth else None
+                all_rendering_alpha = [] if args.render_depth else None
                 V = current_extrinsic.shape[0]
                 mini_batch_size = 5
 
@@ -472,6 +475,7 @@ if __name__ == "__main__":
                     end_view_iter = min(view_iter + mini_batch_size, V)
                     rendering_img, rendering_depth, rendering_alpha = rasterize_rgb_expected_depth(
                         rasterization,
+                        include_depth=args.render_depth,
                         means=pos, quats=quats, scales=scales, opacities=opacity.squeeze(-1), colors=shs,
                         viewmats=current_extrinsic[view_iter:end_view_iter], Ks=current_intrinsic[view_iter:end_view_iter],
                         width=args.resolution, height=args.resolution, sh_degree=2, packed=False,
@@ -482,12 +486,14 @@ if __name__ == "__main__":
                         rasterize_mode='classic'
                     )
                     all_rendering_img.append(rendering_img)
-                    all_rendering_depth.append(rendering_depth)
-                    all_rendering_alpha.append(rendering_alpha)
+                    if args.render_depth:
+                        all_rendering_depth.append(rendering_depth)
+                        all_rendering_alpha.append(rendering_alpha)
                 
                 all_rendering_img = torch.cat(all_rendering_img, dim=0)
-                all_rendering_depth = torch.cat(all_rendering_depth, dim=0)
-                all_rendering_alpha = torch.cat(all_rendering_alpha, dim=0)
+                if args.render_depth:
+                    all_rendering_depth = torch.cat(all_rendering_depth, dim=0)
+                    all_rendering_alpha = torch.cat(all_rendering_alpha, dim=0)
                 all_rendering_img = all_rendering_img.clamp(0.0, 1.0)   
 
             # Quantize on GPU to uint8 then move to CPU and store

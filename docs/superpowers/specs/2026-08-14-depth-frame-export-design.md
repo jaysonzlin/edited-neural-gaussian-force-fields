@@ -30,15 +30,16 @@ MP4 outputs are unchanged.
 
 ## Scope and compatibility
 
-Only `dataset/render.py` changes. The renderer will request RGB and expected
-depth in a single rasterization call, split the four output channels, and
-write depth only when the existing `--render_depth` flag is supplied. The
-existing `--render_img` and `--compile_video` behavior remains unchanged.
+`dataset/render.py` and a small testable `dataset/depth_export.py` helper
+change. The renderer requests RGB and expected depth in a single rasterization
+call only when the existing `--render_depth` flag is supplied; otherwise it
+keeps the existing RGB-only call. The helper splits the four output channels
+and writes depth only under the flag. Existing `--render_img` and
+`--compile_video` behavior remains unchanged.
 
 ## Verification
 
-Add a focused regression test that statically exercises the rendering module's
-depth-export contract: both paths use `RGB+ED`, split RGB/depth, and write
-float32 `depth` and `alpha` datasets under the flag. Run that test before and
+Add focused regression tests for the rasterization helper's `RGB+ED` and
+RGB-only contracts, plus its float32 HDF5 output. Run those tests before and
 after the production change, then run the appropriate project test command or
 a syntax compilation check if no full test suite is available.

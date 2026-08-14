@@ -165,7 +165,7 @@ python -m dataset.gs_simulation_scene \
 ```
 Run `bash scripts/mpm.sh` to generate all scenes on a slurm cluster.
 
-Step 4: Render the images for `--model_path` by specifying `--background_path` for backgrounds, `--config` for camera settings, and `--single_view` for certain view (moving camera if not specified, render all 100 views if specified as `-1`). The multi-view images of initial scenes and the dynamic output will be saved into `--initial_path` and `--output_path`, respectively. `--render_depth` renders normalized depthmaps into uint16 PNGs.
+Step 4: Render the images for `--model_path` by specifying `--background_path` for backgrounds, `--config` for camera settings, and `--single_view` for certain view (moving camera if not specified, render all 100 views if specified as `-1`). The multi-view images of initial scenes and the dynamic output will be saved into `--initial_path` and `--output_path`, respectively. With `--render_depth`, each output directory also receives `depth.h5` containing raw float32 expected camera-space z-depth and alpha datasets, ordered `[frame, view, height, width]`.
 
 ```bash
 python -m dataset.render \

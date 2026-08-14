@@ -45,3 +45,18 @@ class RasterizeRgbExpectedDepthTest(unittest.TestCase):
         self.assertTrue(torch.equal(rgb, rendered[..., :3]))
         self.assertTrue(torch.equal(depth, torch.tensor([[[4.0]]])))
         self.assertTrue(torch.equal(rendered_alpha, torch.tensor([[[0.75]]])))
+
+    def test_preserves_rgb_only_rendering_when_depth_is_not_requested(self):
+        rendered = torch.tensor([[[[0.1, 0.2, 0.3]]]])
+
+        def rasterizer(**kwargs):
+            self.assertEqual(kwargs["render_mode"], "RGB")
+            return rendered, torch.tensor([[[[0.75]]]]), {}
+
+        rgb, depth, rendered_alpha = rasterize_rgb_expected_depth(
+            rasterizer, include_depth=False, means="fixture"
+        )
+
+        self.assertTrue(torch.equal(rgb, rendered))
+        self.assertIsNone(depth)
+        self.assertIsNone(rendered_alpha)
