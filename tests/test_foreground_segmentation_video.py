@@ -9,6 +9,7 @@ import numpy as np
 from scripts.foreground_segmentation_video import (
     default_output_path,
     discover_frame_paths,
+    overlay_masks,
     parse_args,
     normalize_video_masks,
     require_detections,
@@ -102,3 +103,29 @@ class ForegroundVideoModelBoundaryTest(unittest.TestCase):
             [mask.tolist() for mask in masks],
             [[[True, False]], [[False, True]]],
         )
+
+
+class ForegroundVideoRenderTest(unittest.TestCase):
+    def test_overlays_union_mask_in_green(self):
+        image = np.zeros((1, 2, 3), dtype=np.uint8)
+        masks = [
+            np.asarray([[True, False]]),
+            np.asarray([[False, True]]),
+        ]
+
+        result = overlay_masks(image, masks, 0.5)
+
+        self.assertEqual(result.tolist(), [[[0, 128, 0], [0, 128, 0]]])
+
+    def test_returns_original_image_when_no_masks_exist(self):
+        image = np.asarray([[[10, 20, 30]]], dtype=np.uint8)
+
+        result = overlay_masks(image, [], 0.5)
+
+        self.assertTrue(np.array_equal(result, image))
+
+    def test_readme_documents_video_export(self):
+        readme = Path("README.md").read_text()
+
+        self.assertIn("foreground_segmentation_video.py", readme)
+        self.assertIn("--foreground-prompts panda,ball,can,coke", readme)

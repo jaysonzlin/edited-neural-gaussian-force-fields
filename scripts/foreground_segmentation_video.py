@@ -224,3 +224,106 @@ def propagate_masks(
             }
             propagated[frame_index] = normalize_video_masks(masks, image_shape)
     return propagated
+
+
+def load_rgb_frame(path: Path):
+    """Load one render PNG as an RGB uint8 array."""
+    try:
+        import numpy as np
+        from PIL import Image
+    except ImportError as error:
+        raise RuntimeError("Reading rendered images requires Pillow and numpy") from error
+    with Image.open(path) as image:
+        return np.asarray(image.convert("RGB"), dtype=np.uint8)
+
+
+def overlay_masks(image, masks, opacity: float):
+    """Alpha-blend the union of foreground masks over an RGB image in green."""
+    try:
+        import numpy as np
+    except ImportError as error:
+        raise RuntimeError("Foreground segmentation requires numpy") from error
+    if not masks:
+        return image.copy()
+    union = np.logical_or.reduce(np.asarray(masks, dtype=bool), axis=0)
+    result = image.astype(np.float32).copy()
+    result[union] = (
+        (1.0 - opacity) * result[union]
+        + opacity * np.asarray([0, 255, 0], dtype=np.float32)
+    )
+    return np.rint(result).astype(np.uint8)
+
+
+def annotate_initial_detections(image, boxes: Sequence[DetectedBox]):
+    """Draw Grounding-DINO box/label annotations on an RGB image."""
+    try:
+        import cv2
+    except ImportError as error:
+        raise RuntimeError("Drawing detections requires opencv-python") from error
+    annotated = image.copy()
+    for box in boxes:
+        left, top, right, bottom = (int(round(value)) for value in box.xyxy)
+        cv2.rectangle(annotated, (left, top), (right, bottom), (255, 255, 0), 2)
+        cv2.putText(
+            annotated,
+            box.label,
+            (left, max(0, top - 6)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (255, 255, 0),
+            1,
+            cv2.LINE_AA,
+        )
+    return annotated
+
+
+def export_video(options: argparse.Namespace) -> Path:
+    """Create an MP4 that overlays propagated foreground masks on RGB frames."""
+    try:
+        import imageio.v2 as imageio
+    except ImportError as error:
+        raise RuntimeError("Writing MP4 files requires imageio and imageio-ffmpeg") from error
+
+    frame_paths = discover_frame_paths(
+        options.render_dir, options.view, options.start_frame, options.end_frame
+    )
+    first_frame = load_rgb_frame(frame_paths[0])
+    prompts = parse_foreground_prompts(options.foreground_prompts)
+    boxes = detect_initial_boxes(
+        first_frame,
+        prompts,
+        options.grounding_dino_model_dir,
+        options.box_threshold,
+    )
+    require_detections(boxes, prompts, options.box_threshold)
+    masks_by_frame = propagate_masks(
+        frame_paths, boxes, options.sam2_config, options.sam2_checkpoint
+    )
+    output = options.output or default_output_path(options)
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    expected_shape = first_frame.shape
+    with imageio.get_writer(output, fps=options.fps, codec="libx264") as writer:
+        for frame_index, (frame_path, masks) in enumerate(
+            zip(frame_paths, masks_by_frame)
+        ):
+            image = load_rgb_frame(frame_path)
+            if image.shape != expected_shape:
+                raise ValueError(
+                    f"Rendered frame {frame_path} has shape {image.shape}; expected {expected_shape}"
+                )
+            rendered = overlay_masks(image, masks, options.overlay_opacity)
+            if frame_index == 0:
+                rendered = annotate_initial_detections(rendered, boxes)
+            writer.append_data(rendered)
+    return output
+
+
+def main() -> None:
+    """Run the foreground-segmentation video exporter."""
+    output = export_video(parse_args())
+    print(output)
+
+
+if __name__ == "__main__":
+    main()

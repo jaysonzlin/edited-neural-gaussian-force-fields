@@ -93,6 +93,24 @@ wget -O videogen/checkpoints/sam2/sam2.1_hiera_l.yaml https://github.com/faceboo
 wget -O videogen/checkpoints/sam2/sam2.1_hiera_large.pt https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt
 ```
 
+### Foreground segmentation video
+
+Create an MP4 preview that detects `panda`, `ball`, `can`, and `coke` with
+Grounding DINO on the first rendered frame, then propagates those masks through
+every frame with SAM2:
+
+```bash
+python scripts/foreground_segmentation_video.py \
+  --render-dir data/GSCollision/dynamic_d/3_0/0_panda_ball_can/table6 \
+  --grounding-dino-model-dir videogen/checkpoints/grounding-dino-base \
+  --sam2-config videogen/checkpoints/sam2/sam2.1_hiera_l.yaml \
+  --sam2-checkpoint videogen/checkpoints/sam2/sam2.1_hiera_large.pt \
+  --foreground-prompts panda,ball,can,coke
+```
+
+The default output is
+`data/GSCollision/dynamic_d/3_0/0_panda_ball_can/table6/foreground_segmentation_view_0.mp4`.
+
 ## 📊 Data generation
 The data should be organized as :
 
