@@ -9,6 +9,7 @@ import numpy as np
 from scripts.foreground_segmentation_video import (
     default_output_path,
     discover_frame_paths,
+    make_progress_factory,
     overlay_masks,
     parse_args,
     normalize_video_masks,
@@ -74,6 +75,23 @@ class ForegroundVideoArgumentsTest(unittest.TestCase):
                     ]
                 )
 
+    def test_parses_no_progress_option(self):
+        options = parse_args(
+            [
+                "--render-dir",
+                "render",
+                "--grounding-dino-model-dir",
+                "dino",
+                "--sam2-config",
+                "sam2.yaml",
+                "--sam2-checkpoint",
+                "sam2.pt",
+                "--no-progress",
+            ]
+        )
+
+        self.assertTrue(options.no_progress)
+
     def test_discovers_inclusive_contiguous_png_range(self):
         with tempfile.TemporaryDirectory() as directory:
             view_dir = Path(directory) / "view_0"
@@ -129,3 +147,13 @@ class ForegroundVideoRenderTest(unittest.TestCase):
 
         self.assertIn("foreground_segmentation_video.py", readme)
         self.assertIn("--foreground-prompts panda,ball,can,coke", readme)
+
+    def test_disabled_progress_factory_creates_a_silent_bar(self):
+        bar = make_progress_factory(True)(
+            total=2, desc="SAM2 propagation", leave=True
+        )
+        try:
+            self.assertTrue(bar.disable)
+            self.assertEqual(bar.total, 2)
+        finally:
+            bar.close()

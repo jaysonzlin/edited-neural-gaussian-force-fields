@@ -31,6 +31,7 @@ def parse_args(arguments: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--box-threshold", type=float, default=0.25)
     parser.add_argument("--fps", type=positive_int, default=24)
     parser.add_argument("--overlay-opacity", type=float, default=0.5)
+    parser.add_argument("--no-progress", action="store_true")
     parser.add_argument("--output", type=Path)
     options = parser.parse_args(arguments)
     if options.view < 0 or options.start_frame < 0:
@@ -71,6 +72,15 @@ def discover_frame_paths(
 def default_output_path(options: argparse.Namespace) -> Path:
     """Return the conventional segmentation-video output path."""
     return options.render_dir / f"foreground_segmentation_view_{options.view}.mp4"
+
+
+def make_progress_factory(disabled: bool):
+    """Return a tqdm factory, optionally configured to emit no terminal output."""
+    try:
+        from tqdm.auto import tqdm
+    except ImportError as error:
+        raise RuntimeError("Progress reporting requires tqdm") from error
+    return lambda **kwargs: tqdm(disable=disabled, **kwargs)
 
 
 @dataclass(frozen=True)
@@ -166,6 +176,7 @@ def propagate_masks(
     boxes: Sequence[DetectedBox],
     sam2_config: Path,
     sam2_checkpoint: Path,
+    progress_factory=None,
 ):
     """Propagate first-frame boxes through a render sequence with SAM2."""
     try:
@@ -185,6 +196,8 @@ def propagate_masks(
         raise FileNotFoundError(f"SAM2 checkpoint not found: {sam2_checkpoint}")
     if not frame_paths:
         raise ValueError("At least one rendered frame is required")
+    if progress_factory is None:
+        progress_factory = make_progress_factory(False)
 
     with Image.open(frame_paths[0]) as first_image:
         image_shape = (first_image.height, first_image.width)
@@ -213,16 +226,23 @@ def propagate_masks(
             )
 
         propagated = [[] for _ in frame_paths]
-        for frame_index, object_ids, mask_logits in predictor.propagate_in_video(
-            inference_state
-        ):
-            if not 0 <= frame_index < len(frame_paths):
-                continue
-            masks = {
-                int(object_id): mask_logits[index].detach().cpu().numpy()
-                for index, object_id in enumerate(object_ids)
-            }
-            propagated[frame_index] = normalize_video_masks(masks, image_shape)
+        progress = progress_factory(
+            total=len(frame_paths), desc="SAM2 propagation", leave=True
+        )
+        try:
+            for frame_index, object_ids, mask_logits in predictor.propagate_in_video(
+                inference_state
+            ):
+                if not 0 <= frame_index < len(frame_paths):
+                    continue
+                masks = {
+                    int(object_id): mask_logits[index].detach().cpu().numpy()
+                    for index, object_id in enumerate(object_ids)
+                }
+                propagated[frame_index] = normalize_video_masks(masks, image_shape)
+                progress.update()
+        finally:
+            progress.close()
     return propagated
 
 
@@ -277,7 +297,7 @@ def annotate_initial_detections(image, boxes: Sequence[DetectedBox]):
     return annotated
 
 
-def export_video(options: argparse.Namespace) -> Path:
+def export_video(options: argparse.Namespace, progress_factory=None) -> Path:
     """Create an MP4 that overlays propagated foreground masks on RGB frames."""
     try:
         import imageio.v2 as imageio
@@ -287,6 +307,8 @@ def export_video(options: argparse.Namespace) -> Path:
     frame_paths = discover_frame_paths(
         options.render_dir, options.view, options.start_frame, options.end_frame
     )
+    if progress_factory is None:
+        progress_factory = make_progress_factory(False)
     first_frame = load_rgb_frame(frame_paths[0])
     prompts = parse_foreground_prompts(options.foreground_prompts)
     boxes = detect_initial_boxes(
@@ -297,31 +319,41 @@ def export_video(options: argparse.Namespace) -> Path:
     )
     require_detections(boxes, prompts, options.box_threshold)
     masks_by_frame = propagate_masks(
-        frame_paths, boxes, options.sam2_config, options.sam2_checkpoint
+        frame_paths,
+        boxes,
+        options.sam2_config,
+        options.sam2_checkpoint,
+        progress_factory,
     )
     output = options.output or default_output_path(options)
     output.parent.mkdir(parents=True, exist_ok=True)
 
     expected_shape = first_frame.shape
-    with imageio.get_writer(output, fps=options.fps, codec="libx264") as writer:
-        for frame_index, (frame_path, masks) in enumerate(
-            zip(frame_paths, masks_by_frame)
-        ):
-            image = load_rgb_frame(frame_path)
-            if image.shape != expected_shape:
-                raise ValueError(
-                    f"Rendered frame {frame_path} has shape {image.shape}; expected {expected_shape}"
-                )
-            rendered = overlay_masks(image, masks, options.overlay_opacity)
-            if frame_index == 0:
-                rendered = annotate_initial_detections(rendered, boxes)
-            writer.append_data(rendered)
+    progress = progress_factory(total=len(frame_paths), desc="MP4 encoding", leave=True)
+    try:
+        with imageio.get_writer(output, fps=options.fps, codec="libx264") as writer:
+            for frame_index, (frame_path, masks) in enumerate(
+                zip(frame_paths, masks_by_frame)
+            ):
+                image = load_rgb_frame(frame_path)
+                if image.shape != expected_shape:
+                    raise ValueError(
+                        f"Rendered frame {frame_path} has shape {image.shape}; expected {expected_shape}"
+                    )
+                rendered = overlay_masks(image, masks, options.overlay_opacity)
+                if frame_index == 0:
+                    rendered = annotate_initial_detections(rendered, boxes)
+                writer.append_data(rendered)
+                progress.update()
+    finally:
+        progress.close()
     return output
 
 
 def main() -> None:
     """Run the foreground-segmentation video exporter."""
-    output = export_video(parse_args())
+    options = parse_args()
+    output = export_video(options, make_progress_factory(options.no_progress))
     print(output)
 
 
