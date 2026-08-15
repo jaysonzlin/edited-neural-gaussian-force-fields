@@ -294,6 +294,7 @@ def segment_boxes(
         import numpy as np
         import torch
         from hydra import initialize_config_dir
+        from hydra.core.global_hydra import GlobalHydra
         from sam2.build_sam import build_sam2
         from sam2.sam2_image_predictor import SAM2ImagePredictor
     except ImportError as error:
@@ -305,6 +306,9 @@ def segment_boxes(
     if not sam2_checkpoint.is_file():
         raise FileNotFoundError(f"SAM2 checkpoint not found: {sam2_checkpoint}")
 
+    global_hydra = GlobalHydra.instance()
+    if global_hydra.is_initialized():
+        global_hydra.clear()
     with initialize_config_dir(
         version_base=None, config_dir=str(sam2_config.parent.resolve())
     ):

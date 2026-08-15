@@ -92,6 +92,8 @@ class PointSelectionTest(unittest.TestCase):
                 return_value=contextlib.nullcontext()
             )
             build_sam2 = mock.MagicMock(return_value=object())
+            global_hydra = mock.MagicMock()
+            global_hydra.is_initialized.return_value = True
 
             class Predictor:
                 def __init__(self, model):
@@ -111,6 +113,9 @@ class PointSelectionTest(unittest.TestCase):
                 {
                     "torch": torch,
                     "hydra": SimpleNamespace(initialize_config_dir=initialize_config_dir),
+                    "hydra.core.global_hydra": SimpleNamespace(
+                        GlobalHydra=SimpleNamespace(instance=lambda: global_hydra)
+                    ),
                     "sam2": SimpleNamespace(),
                     "sam2.build_sam": sam2_build,
                     "sam2.sam2_image_predictor": sam2_predictor,
@@ -119,6 +124,7 @@ class PointSelectionTest(unittest.TestCase):
                 masks = segment_boxes([[(0, 0, 0)]], [(0.0, 0.0, 1.0, 1.0)], config, checkpoint)
 
             self.assertEqual(masks, [[[True]]])
+            global_hydra.clear.assert_called_once_with()
             initialize_config_dir.assert_called_once_with(
                 version_base=None, config_dir=str(config.parent.resolve())
             )
