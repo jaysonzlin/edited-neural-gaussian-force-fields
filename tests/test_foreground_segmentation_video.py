@@ -4,10 +4,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import numpy as np
+
 from scripts.foreground_segmentation_video import (
     default_output_path,
     discover_frame_paths,
     parse_args,
+    normalize_video_masks,
+    require_detections,
 )
 
 
@@ -79,3 +83,22 @@ class ForegroundVideoArgumentsTest(unittest.TestCase):
             paths = discover_frame_paths(Path(directory), 0, 1, 2)
 
         self.assertEqual(paths, [view_dir / "0001.png", view_dir / "0002.png"])
+
+
+class ForegroundVideoModelBoundaryTest(unittest.TestCase):
+    def test_no_initial_detection_is_actionable(self):
+        with self.assertRaisesRegex(RuntimeError, "panda, ball, can, coke.*0.25"):
+            require_detections([], ["panda", "ball", "can", "coke"], 0.25)
+
+    def test_normalizes_each_propagated_object_mask(self):
+        raw = {
+            1: np.asarray([[1, 0]], dtype=np.float32),
+            2: np.asarray([[0, 1]], dtype=np.float32),
+        }
+
+        masks = normalize_video_masks(raw, (1, 2))
+
+        self.assertEqual(
+            [mask.tolist() for mask in masks],
+            [[[True, False]], [[False, True]]],
+        )
