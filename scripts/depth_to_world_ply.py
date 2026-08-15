@@ -293,6 +293,7 @@ def segment_boxes(
     try:
         import numpy as np
         import torch
+        from hydra import initialize_config_dir
         from sam2.build_sam import build_sam2
         from sam2.sam2_image_predictor import SAM2ImagePredictor
     except ImportError as error:
@@ -304,9 +305,13 @@ def segment_boxes(
     if not sam2_checkpoint.is_file():
         raise FileNotFoundError(f"SAM2 checkpoint not found: {sam2_checkpoint}")
 
-    predictor = SAM2ImagePredictor(
-        build_sam2(str(sam2_config), str(sam2_checkpoint), device="cuda")
-    )
+    with initialize_config_dir(
+        version_base=None, config_dir=str(sam2_config.parent.resolve())
+    ):
+        model = build_sam2(
+            sam2_config.stem, str(sam2_checkpoint), device="cuda"
+        )
+    predictor = SAM2ImagePredictor(model)
     predictor.set_image(np.asarray(image, dtype=np.uint8))
     masks = []
     for box in boxes:

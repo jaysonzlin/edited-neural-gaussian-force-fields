@@ -1,8 +1,12 @@
 import contextlib
 import io
+import sys
+import tempfile
 import unittest
+import numpy as np
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 from scripts.depth_to_world_ply import (
     default_output_path,
@@ -12,6 +16,7 @@ from scripts.depth_to_world_ply import (
     prune_depth_mask,
     select_foreground_points,
     select_points,
+    segment_boxes,
     unproject_world,
 )
 
@@ -75,6 +80,50 @@ class PointSelectionTest(unittest.TestCase):
                 options,
                 detector=lambda *_: [],
                 segmenter=lambda *_: self.fail("segmenter must not be called"),
+            )
+
+    def test_segments_using_an_external_sam2_config_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "sam2.1_hiera_l.yaml"
+            checkpoint = Path(directory) / "sam2.1_hiera_large.pt"
+            config.touch()
+            checkpoint.touch()
+            initialize_config_dir = mock.MagicMock(
+                return_value=contextlib.nullcontext()
+            )
+            build_sam2 = mock.MagicMock(return_value=object())
+
+            class Predictor:
+                def __init__(self, model):
+                    self.model = model
+
+                def set_image(self, image):
+                    self.image = image
+
+                def predict(self, **kwargs):
+                    return np.asarray([[[True]]]), None, None
+
+            torch = SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: True))
+            sam2_build = SimpleNamespace(build_sam2=build_sam2)
+            sam2_predictor = SimpleNamespace(SAM2ImagePredictor=Predictor)
+            with mock.patch.dict(
+                sys.modules,
+                {
+                    "torch": torch,
+                    "hydra": SimpleNamespace(initialize_config_dir=initialize_config_dir),
+                    "sam2": SimpleNamespace(),
+                    "sam2.build_sam": sam2_build,
+                    "sam2.sam2_image_predictor": sam2_predictor,
+                },
+            ):
+                masks = segment_boxes([[(0, 0, 0)]], [(0.0, 0.0, 1.0, 1.0)], config, checkpoint)
+
+            self.assertEqual(masks, [[[True]]])
+            initialize_config_dir.assert_called_once_with(
+                version_base=None, config_dir=str(config.parent.resolve())
+            )
+            build_sam2.assert_called_once_with(
+                config.stem, str(checkpoint), device="cuda"
             )
 
     def test_segmented_default_output_name_is_distinct(self):
