@@ -3,10 +3,14 @@
 
 import argparse
 from dataclasses import dataclass
+import logging
 import math
 from pathlib import Path
 import tempfile
 from typing import Optional, Sequence
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 def positive_int(value: str) -> int:
@@ -32,6 +36,7 @@ def parse_args(arguments: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--fps", type=positive_int, default=24)
     parser.add_argument("--overlay-opacity", type=float, default=0.5)
     parser.add_argument("--no-progress", action="store_true")
+    parser.add_argument("--compile", action="store_true")
     parser.add_argument("--output", type=Path)
     options = parser.parse_args(arguments)
     if options.view < 0 or options.start_frame < 0:
@@ -91,6 +96,49 @@ class DetectedBox:
     xyxy: tuple[float, float, float, float]
 
 
+@dataclass(frozen=True)
+class AccelerationSettings:
+    """CUDA inference settings selected for this exporter invocation."""
+
+    use_bf16: bool
+    use_tf32: bool
+
+
+def configure_acceleration(torch_module) -> AccelerationSettings:
+    """Enable supported CUDA acceleration and log every performance fallback."""
+    use_bf16 = bool(torch_module.cuda.is_bf16_supported())
+    capability = torch_module.cuda.get_device_capability()
+    use_tf32 = capability[0] >= 8
+    torch_module.backends.cuda.matmul.allow_tf32 = use_tf32
+    torch_module.backends.cudnn.allow_tf32 = use_tf32
+    if not use_bf16:
+        LOGGER.warning("BF16 is unavailable; falling back to FP32 inference")
+    if not use_tf32:
+        LOGGER.info(
+            "TF32 is unavailable on CUDA compute capability %s; leaving it disabled",
+            capability,
+        )
+    LOGGER.info(
+        "Segmentation acceleration: BF16=%s TF32=%s", use_bf16, use_tf32
+    )
+    return AccelerationSettings(use_bf16=use_bf16, use_tf32=use_tf32)
+
+
+def maybe_compile_model(model, name: str, torch_module, enabled: bool):
+    """Compile a model only when requested, retaining eager mode on failure."""
+    if not enabled:
+        return model
+    try:
+        compiled = torch_module.compile(model)
+    except Exception as error:
+        LOGGER.warning(
+            "%s compilation failed; falling back to eager mode: %s", name, error
+        )
+        return model
+    LOGGER.info("%s compiled successfully", name)
+    return compiled
+
+
 def parse_foreground_prompts(value: str) -> list[str]:
     """Parse one or more non-empty Grounding-DINO prompts."""
     prompts = [prompt.strip() for prompt in value.split(",") if prompt.strip()]
@@ -129,7 +177,14 @@ def normalize_video_masks(object_masks, image_shape: tuple[int, int]):
     return masks
 
 
-def detect_initial_boxes(image, prompts, model_dir: Path, box_threshold: float):
+def detect_initial_boxes(
+    image,
+    prompts,
+    model_dir: Path,
+    box_threshold: float,
+    compile_models: bool = False,
+    acceleration: Optional[AccelerationSettings] = None,
+):
     """Run offline Grounding DINO on the first selected RGB frame."""
     try:
         import numpy as np
@@ -143,18 +198,22 @@ def detect_initial_boxes(image, prompts, model_dir: Path, box_threshold: float):
         raise RuntimeError("Foreground segmentation requires CUDA")
     if not model_dir.is_dir():
         raise FileNotFoundError(f"Grounding DINO model directory not found: {model_dir}")
+    settings = acceleration or configure_acceleration(torch)
 
     height, width = image.shape[:2]
     processor = AutoProcessor.from_pretrained(str(model_dir), local_files_only=True)
     model = AutoModelForZeroShotObjectDetection.from_pretrained(
         str(model_dir), local_files_only=True
     ).to("cuda")
+    model = maybe_compile_model(model, "Grounding DINO", torch, compile_models)
     inputs = processor(
         images=np.asarray(image, dtype=np.uint8),
         text=". ".join(prompts) + ".",
         return_tensors="pt",
     ).to("cuda")
-    with torch.no_grad():
+    with torch.inference_mode(), torch.autocast(
+        "cuda", dtype=torch.bfloat16, enabled=settings.use_bf16
+    ):
         outputs = model(**inputs)
     results = processor.post_process_grounded_object_detection(
         outputs,
@@ -177,6 +236,8 @@ def propagate_masks(
     sam2_config: Path,
     sam2_checkpoint: Path,
     progress_factory=None,
+    compile_models: bool = False,
+    acceleration: Optional[AccelerationSettings] = None,
 ):
     """Propagate first-frame boxes through a render sequence with SAM2."""
     try:
@@ -198,6 +259,7 @@ def propagate_masks(
         raise ValueError("At least one rendered frame is required")
     if progress_factory is None:
         progress_factory = make_progress_factory(False)
+    settings = acceleration or configure_acceleration(torch)
 
     with Image.open(frame_paths[0]) as first_image:
         image_shape = (first_image.height, first_image.width)
@@ -216,31 +278,35 @@ def propagate_masks(
             predictor = build_sam2_video_predictor(
                 sam2_config.stem, str(sam2_checkpoint), device="cuda"
             )
-        inference_state = predictor.init_state(video_path=str(temporary_path))
-        for object_id, box in enumerate(boxes, start=1):
-            predictor.add_new_points_or_box(
-                inference_state=inference_state,
-                frame_idx=0,
-                obj_id=object_id,
-                box=np.asarray(box.xyxy, dtype=np.float32),
-            )
-
-        propagated = [[] for _ in frame_paths]
+        predictor = maybe_compile_model(predictor, "SAM2", torch, compile_models)
         progress = progress_factory(
             total=len(frame_paths), desc="SAM2 propagation", leave=True
         )
         try:
-            for frame_index, object_ids, mask_logits in predictor.propagate_in_video(
-                inference_state
+            with torch.inference_mode(), torch.autocast(
+                "cuda", dtype=torch.bfloat16, enabled=settings.use_bf16
             ):
-                if not 0 <= frame_index < len(frame_paths):
-                    continue
-                masks = {
-                    int(object_id): mask_logits[index].detach().cpu().numpy()
-                    for index, object_id in enumerate(object_ids)
-                }
-                propagated[frame_index] = normalize_video_masks(masks, image_shape)
-                progress.update()
+                inference_state = predictor.init_state(video_path=str(temporary_path))
+                for object_id, box in enumerate(boxes, start=1):
+                    predictor.add_new_points_or_box(
+                        inference_state=inference_state,
+                        frame_idx=0,
+                        obj_id=object_id,
+                        box=np.asarray(box.xyxy, dtype=np.float32),
+                    )
+
+                propagated = [[] for _ in frame_paths]
+                for frame_index, object_ids, mask_logits in predictor.propagate_in_video(
+                    inference_state
+                ):
+                    if not 0 <= frame_index < len(frame_paths):
+                        continue
+                    masks = {
+                        int(object_id): mask_logits[index].detach().cpu().numpy()
+                        for index, object_id in enumerate(object_ids)
+                    }
+                    propagated[frame_index] = normalize_video_masks(masks, image_shape)
+                    progress.update()
         finally:
             progress.close()
     return propagated
@@ -301,6 +367,7 @@ def export_video(options: argparse.Namespace, progress_factory=None) -> Path:
     """Create an MP4 that overlays propagated foreground masks on RGB frames."""
     try:
         import imageio.v2 as imageio
+        import torch
     except ImportError as error:
         raise RuntimeError("Writing MP4 files requires imageio and imageio-ffmpeg") from error
 
@@ -309,6 +376,9 @@ def export_video(options: argparse.Namespace, progress_factory=None) -> Path:
     )
     if progress_factory is None:
         progress_factory = make_progress_factory(False)
+    if not torch.cuda.is_available():
+        raise RuntimeError("Foreground segmentation requires CUDA")
+    acceleration = configure_acceleration(torch)
     first_frame = load_rgb_frame(frame_paths[0])
     prompts = parse_foreground_prompts(options.foreground_prompts)
     boxes = detect_initial_boxes(
@@ -316,6 +386,8 @@ def export_video(options: argparse.Namespace, progress_factory=None) -> Path:
         prompts,
         options.grounding_dino_model_dir,
         options.box_threshold,
+        options.compile,
+        acceleration,
     )
     require_detections(boxes, prompts, options.box_threshold)
     masks_by_frame = propagate_masks(
@@ -324,6 +396,8 @@ def export_video(options: argparse.Namespace, progress_factory=None) -> Path:
         options.sam2_config,
         options.sam2_checkpoint,
         progress_factory,
+        options.compile,
+        acceleration,
     )
     output = options.output or default_output_path(options)
     output.parent.mkdir(parents=True, exist_ok=True)

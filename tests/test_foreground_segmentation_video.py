@@ -3,13 +3,16 @@ import io
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
 from scripts.foreground_segmentation_video import (
+    configure_acceleration,
     default_output_path,
     discover_frame_paths,
     make_progress_factory,
+    maybe_compile_model,
     overlay_masks,
     parse_args,
     normalize_video_masks,
@@ -157,3 +160,52 @@ class ForegroundVideoRenderTest(unittest.TestCase):
             self.assertEqual(bar.total, 2)
         finally:
             bar.close()
+
+
+class ForegroundVideoAccelerationTest(unittest.TestCase):
+    def make_torch(self, capability=(8, 0), bf16_supported=True, compile_error=None):
+        matmul = SimpleNamespace(allow_tf32=False)
+        cudnn = SimpleNamespace(allow_tf32=False)
+
+        def compile_model(model):
+            if compile_error is not None:
+                raise compile_error
+            return ("compiled", model)
+
+        return SimpleNamespace(
+            cuda=SimpleNamespace(
+                is_bf16_supported=lambda: bf16_supported,
+                get_device_capability=lambda: capability,
+            ),
+            backends=SimpleNamespace(cuda=SimpleNamespace(matmul=matmul), cudnn=cudnn),
+            compile=compile_model,
+        )
+
+    def test_a100_acceleration_enables_bf16_and_tf32(self):
+        torch = self.make_torch(capability=(8, 0), bf16_supported=True)
+
+        settings = configure_acceleration(torch)
+
+        self.assertTrue(settings.use_bf16)
+        self.assertTrue(settings.use_tf32)
+        self.assertTrue(torch.backends.cuda.matmul.allow_tf32)
+        self.assertTrue(torch.backends.cudnn.allow_tf32)
+
+    def test_bf16_fallback_logs_fp32(self):
+        torch = self.make_torch(capability=(7, 5), bf16_supported=False)
+
+        with self.assertLogs("scripts.foreground_segmentation_video", "WARNING") as logs:
+            settings = configure_acceleration(torch)
+
+        self.assertFalse(settings.use_bf16)
+        self.assertIn("FP32", " ".join(logs.output))
+
+    def test_compile_failure_logs_eager_fallback(self):
+        torch = self.make_torch(compile_error=RuntimeError("unsupported graph"))
+        model = object()
+
+        with self.assertLogs("scripts.foreground_segmentation_video", "WARNING") as logs:
+            result = maybe_compile_model(model, "SAM2", torch, enabled=True)
+
+        self.assertIs(result, model)
+        self.assertIn("eager", " ".join(logs.output))
