@@ -41,6 +41,11 @@ def parse_args(arguments: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="Remove points whose world-space y coordinate is at or beyond the cutoff.",
     )
     parser.add_argument(
+        "--background-first",
+        action="store_true",
+        help="Remove background points before applying --downsample-factor.",
+    )
+    parser.add_argument(
         "--background-y-threshold",
         type=float,
         default=5.0,
@@ -165,10 +170,13 @@ def select_points(
     downsample_factor: int,
     remove_background: bool,
     background_y_threshold: float,
+    background_first: bool = False,
 ) -> List[PointRecord]:
-    """Downsample generated points first, then optionally remove the background."""
+    """Select generated points in the requested downsampling/background-removal order."""
+    if remove_background and background_first:
+        points = [point for point in points if point[1] < background_y_threshold]
     selected = list(points[::downsample_factor])
-    if remove_background:
+    if remove_background and not background_first:
         selected = [point for point in selected if point[1] < background_y_threshold]
     return selected
 
@@ -241,10 +249,15 @@ def write_ply(path: Path, points: Iterable[PointRecord]) -> None:
 def default_output_path(options: argparse.Namespace) -> Path:
     suffix = {"none": "world", "farther": "world_pruned", "both": "world_pruned_both_sides"}[options.prune_mode]
     name = f"point_cloud_{options.frame:04d}_view_{options.view}_{suffix}"
-    if options.downsample_factor > 1:
-        name += f"_downsampled_{options.downsample_factor}x"
-    if options.remove_background:
+    if options.remove_background and options.background_first:
         name += "_foreground_only"
+        if options.downsample_factor > 1:
+            name += f"_downsampled_{options.downsample_factor}x"
+    else:
+        if options.downsample_factor > 1:
+            name += f"_downsampled_{options.downsample_factor}x"
+        if options.remove_background:
+            name += "_foreground_only"
     return options.render_dir / f"{name}.ply"
 
 
@@ -293,6 +306,7 @@ def export_point_cloud(options: argparse.Namespace) -> Path:
         options.downsample_factor,
         options.remove_background,
         options.background_y_threshold,
+        options.background_first,
     )
     output = options.output or default_output_path(options)
     write_ply(output, selected)
