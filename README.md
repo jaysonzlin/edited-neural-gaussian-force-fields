@@ -111,6 +111,27 @@ python scripts/foreground_segmentation_video.py \
 The default output is
 `data/GSCollision/dynamic_d/3_0/0_panda_ball_can/table6/foreground_segmentation_view_0.mp4`.
 
+### Tracked point-view export
+
+Export the tracked foreground objects as one variable-length HDF5 point cloud
+per `view_0` frame. Grounding DINO detects `panda`, `ball`, `can`, and `coke`
+on the first frame; SAM2 tracks the detected subset through the sequence. The
+exporter prunes depth discontinuities and keeps every tenth tracked point.
+
+```bash
+python scripts/export_tracked_point_views.py \
+  --render-dir data/GSCollision/dynamic_d/3_0/0_panda_ball_can/table6 \
+  --grounding-dino-model-dir videogen/checkpoints/grounding-dino-base \
+  --sam2-config videogen/checkpoints/sam2/sam2.1_hiera_l.yaml \
+  --sam2-checkpoint videogen/checkpoints/sam2/sam2.1_hiera_large.pt \
+  --foreground-prompts panda,ball,can,coke \
+  --downsample-factor 10
+```
+
+This writes `view_0/point_views/0000.h5` through `0099.h5`. Each file stores
+`/xyz` as `float32[N, 3]` world coordinates and `/rgb` as `uint8[N, 3]`
+aligned colors.
+
 ## 📊 Data generation
 The data should be organized as :
 
